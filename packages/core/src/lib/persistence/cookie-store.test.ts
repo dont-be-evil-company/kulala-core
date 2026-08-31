@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
 import { closeDb, getDb, getDbInMemory, setDbForTesting } from "./db";
-import { runMigrations } from "./migrations/runner";
 import {
   getCookieHeaderForRequest,
   mergeCookieHeaderValues,
@@ -26,41 +24,43 @@ test("mergeCookieHeaderValues: later header wins for same name", () => {
   expect(mergeCookieHeaderValues("a=1; b=1", "a=2; c=3")).toBe("a=2; b=1; c=3");
 });
 
-test("storeCookiesFromResponse: upserts with released schema (migrations 1-3 only)", () => {
-  const db = new Database(":memory:", { create: true });
-  runMigrations(db);
-  db.run("DELETE FROM schema_migrations WHERE version = 4");
-  db.run("DROP INDEX IF EXISTS uq_cookie_jar_identity");
-  setDbForTesting(db);
-
-  storeCookiesFromResponse("http://echo.kulala.app/", ["kulala=a; Path=/"]);
-  storeCookiesFromResponse("http://echo.kulala.app/", ["kulala=b; Path=/"]);
-
-  const rows = db
-    .query<
-      { port: number; value: string },
-      []
-    >("SELECT port, value FROM cookie_jar WHERE domain = 'echo.kulala.app'")
-    .all();
-  expect(rows).toHaveLength(1);
-  expect(rows[0]).toEqual({ port: 0, value: "b" });
-});
-
-test("storeCookiesFromResponse: upserts default-port cookies instead of duplicating", () => {
+test("storeCookiesFromResponse: upserts cookies instead of duplicating", () => {
   storeCookiesFromResponse("http://echo.kulala.app/", ["kulala=test; Path=/"]);
   storeCookiesFromResponse("http://echo.kulala.app/", ["kulala=test1; Path=/"]);
 
   const rows = getDb()
     .query<
-      { name: string; port: number; value: string },
+      { name: string; value: string },
       []
-    >("SELECT name, port, value FROM cookie_jar WHERE domain = 'echo.kulala.app'")
+    >("SELECT name, value FROM cookie_jar WHERE domain = 'echo.kulala.app'")
     .all();
   expect(rows).toHaveLength(1);
-  expect(rows[0]).toEqual({ name: "kulala", port: 0, value: "test1" });
+  expect(rows[0]).toEqual({ name: "kulala", value: "test1" });
   expect(getCookieHeaderForRequest("http://echo.kulala.app/")).toBe(
     "kulala=test1",
   );
+});
+
+test("getCookieHeaderForRequest: sends cookies when the host matches and the port does not", () => {
+  storeCookiesFromResponse("http://localhost:3000/", ["sid=abc; Path=/"]);
+
+  expect(getCookieHeaderForRequest("http://localhost:4000/")).toBe("sid=abc");
+  expect(getCookieHeaderForRequest("http://localhost/")).toBe("sid=abc");
+});
+
+test("storeCookiesFromResponse: Set-Cookie on another port replaces the same cookie", () => {
+  storeCookiesFromResponse("http://localhost:3000/", ["sid=old; Path=/"]);
+  storeCookiesFromResponse("http://localhost:4000/", ["sid=new; Path=/"]);
+
+  const rows = getDb()
+    .query<
+      { name: string; value: string },
+      []
+    >("SELECT name, value FROM cookie_jar WHERE domain = 'localhost' AND name = 'sid'")
+    .all();
+  expect(rows).toEqual([{ name: "sid", value: "new" }]);
+  expect(getCookieHeaderForRequest("http://localhost:3000/")).toBe("sid=new");
+  expect(getCookieHeaderForRequest("http://localhost:4000/")).toBe("sid=new");
 });
 
 test("getCookieHeaderForRequest: same name at different paths keeps most specific", () => {

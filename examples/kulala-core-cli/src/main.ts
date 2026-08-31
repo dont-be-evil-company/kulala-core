@@ -1,4 +1,4 @@
-import { kulalaCore } from "@mistweaverco/kulala-core";
+import { kulalaCore } from "@kulala/core";
 import { existsSync, readFileSync } from "node:fs";
 
 async function getInputPayload(): Promise<string> {

@@ -1,4 +1,4 @@
-import { kulalaCore } from "@mistweaverco/kulala-core";
+import { kulalaCore } from "@dont-be-evil-company/kulala-core";
 
 const http = `### LUA_SCRIPTED
 < {% lang=lua

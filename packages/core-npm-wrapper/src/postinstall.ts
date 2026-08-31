@@ -16,6 +16,6 @@ try {
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`Warning: kulala-core postinstall failed: ${message}\n`);
   process.stderr.write(
-    "@mistweaverco/kulala-core will attempt to download it on first use instead.\n",
+    "@dont-be-evil-company/kulala-core will attempt to download it on first use instead.\n",
   );
 }

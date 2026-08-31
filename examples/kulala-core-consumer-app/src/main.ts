@@ -1,4 +1,4 @@
-import { kulalaCore } from "@mistweaverco/kulala-core";
+import { kulalaCore } from "@kulala/core";
 
 const content = `### Example request
 GET https://echo.kulala.app/get

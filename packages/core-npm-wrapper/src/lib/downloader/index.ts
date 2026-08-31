@@ -9,7 +9,7 @@ const PACKAGE_ROOT = path.dirname(fileURLToPath(import.meta.url));
 
 const BINARY_NAME = "kulala-core";
 const DOWNLOAD_URL =
-  "https://github.com/mistweaverco/kulala-core/releases/download/v%s/%s";
+  "https://github.com/dont-be-evil-company/kulala-core/releases/download/v%s/%s";
 
 function platform(): string {
   const os =
@@ -229,7 +229,7 @@ export async function tryInstallBackend(): Promise<void> {
       `Warning: failed to download kulala-core during install: ${message}`,
     );
     console.error(
-      "@mistweaverco/kulala-core will attempt to download it on first use instead.",
+      "@dont-be-evil-company/kulala-core will attempt to download it on first use instead.",
     );
   }
 }

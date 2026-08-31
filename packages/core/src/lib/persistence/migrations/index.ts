@@ -4,6 +4,7 @@ import { migration000002GraphqlSchemas } from "./versions/000002_graphql_schemas
 import { migration000003CookieJarPort } from "./versions/000003_cookie_jar_port";
 import { migration000004CookieJarDefaultPort } from "./versions/000004_cookie_jar_default_port";
 import { migration000005OpenapiSchemas } from "./versions/000005_openapi_schemas";
+import { migration000006CookieJarDropPort } from "./versions/000006_cookie_jar_drop_port";
 
 export type Migration = {
   version: number;
@@ -20,4 +21,5 @@ export const MIGRATIONS: readonly Migration[] = [
   migration000003CookieJarPort,
   migration000004CookieJarDefaultPort,
   migration000005OpenapiSchemas,
+  migration000006CookieJarDropPort,
 ];

@@ -7,6 +7,6 @@
     "run": "bun run build && ./dist/kulala-core-cli"
   },
   "dependencies": {
-    "@mistweaverco/kulala-core": "workspace:*"
+    "@kulala/core": "workspace:*"
   }
 }

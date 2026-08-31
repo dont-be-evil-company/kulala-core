@@ -86,28 +86,6 @@ function defaultPathForUrl(url: URL): string {
   return idx <= 0 ? "/" : p.slice(0, idx);
 }
 
-/**
- * Port stored in the jar for a response URL.
- * `0` means the URL had no explicit port (http/https default) and is used instead
- * of NULL so SQLite UNIQUE(domain, port, path, name) upserts work.
- */
-export function cookieStoragePort(url: URL): number {
-  if (url.port) return Number(url.port);
-  return 0;
-}
-
-export function portMatches(
-  requestUrl: URL,
-  cookiePort: number | null,
-): boolean {
-  const cp = cookiePort ?? 0;
-  if (cp === 0) return true;
-  const explicit = requestUrl.port ? Number(requestUrl.port) : 0;
-  if (explicit !== 0) return explicit === cp;
-  const canonical = requestUrl.protocol === "https:" ? 443 : 80;
-  return cp === canonical;
-}
-
 export function domainMatches(host: string, cookieDomain: string): boolean {
   const h = host.toLowerCase();
   const d = cookieDomain.toLowerCase();
@@ -183,7 +161,6 @@ export function storeCookiesFromResponse(
     if (!parsed) continue;
 
     const domain = (parsed.domain ?? hostname).toLowerCase();
-    const port = cookieStoragePort(url);
     const path = parsed.path ?? defaultPathForUrl(url);
     const expiresAt = parsed.expiresAt ?? null;
     const secure = parsed.secure ? 1 : 0;
@@ -193,16 +170,16 @@ export function storeCookiesFromResponse(
     // Expired -> delete
     if (expiresAt && expiresAt <= now) {
       db.run(
-        "DELETE FROM cookie_jar WHERE domain = ? AND port = ? AND path = ? AND name = ?",
-        [domain, port, path, parsed.name],
+        "DELETE FROM cookie_jar WHERE domain = ? AND path = ? AND name = ?",
+        [domain, path, parsed.name],
       );
       continue;
     }
 
     db.run(
-      `INSERT INTO cookie_jar (domain, port, path, name, value, expires_at, secure, http_only, same_site, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(domain, port, path, name) DO UPDATE SET
+      `INSERT INTO cookie_jar (domain, path, name, value, expires_at, secure, http_only, same_site, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(domain, path, name) DO UPDATE SET
          value = excluded.value,
          expires_at = excluded.expires_at,
          secure = excluded.secure,
@@ -211,7 +188,6 @@ export function storeCookiesFromResponse(
          updated_at = excluded.updated_at`,
       [
         domain,
-        port,
         path,
         parsed.name,
         parsed.value,
@@ -318,7 +294,6 @@ export function getCookiePairsForRequest(
     .query<
       {
         domain: string;
-        port: number | null;
         path: string;
         name: string;
         value: string;
@@ -327,7 +302,7 @@ export function getCookiePairsForRequest(
       },
       []
     >(
-      `SELECT domain, port, path, name, value, expires_at, secure
+      `SELECT domain, path, name, value, expires_at, secure
        FROM cookie_jar`,
     )
     .all();
@@ -335,7 +310,6 @@ export function getCookiePairsForRequest(
   const byName = new Map<string, CookiePairForRequest>();
   for (const r of rows) {
     if (!domainMatches(hostname, r.domain)) continue;
-    if (!portMatches(url, r.port)) continue;
     if (!pathMatches(reqPath, r.path)) continue;
     if (r.secure === 1 && !isHttps && r.domain !== "localhost") continue;
     if (r.expires_at && r.expires_at <= now) continue;

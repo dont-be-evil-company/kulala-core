@@ -4,10 +4,10 @@
 
 # Kulala Core
 
-[![Made with love](assets/badge-made-with-love.svg)](https://github.com/mistweaverco/kulala-core/graphs/contributors)
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/mistweaverco/kulala-core?style=for-the-badge)](https://github.com/mistweaverco/kulala-core/releases/latest)
-[![Development status)](assets/badge-development-status.svg)](https://github.com/orgs/mistweaverco/projects/3/views/1?filterQuery=repo%3Amistweaverco%2Fkulala-core)
-[![Discord](assets/badge-discord.svg)](https://mistweaverco.com/discord)
+[![Made with love](assets/badge-made-with-love.svg)](https://github.com/dont-be-evil-company/kulala-core/graphs/contributors)
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/dont-be-evil-company/kulala-core?style=for-the-badge)](https://github.com/dont-be-evil-company/kulala-core/releases/latest)
+[![Development status)](assets/badge-development-status.svg)](https://github.com/orgs/dont-be-evil-company/projects/3/views/1?filterQuery=repo%3Adont-be-evil-company%2Fkulala-core)
+[![Discord](assets/badge-discord.svg)](https://the-dont-be-evil-company.com/discord)
 
 <p></p>
 

@@ -80,7 +80,6 @@ export {
   mergeCookieHeaderValues,
   selectCookieHeaderCandidates,
   cookieAppliesToRequest,
-  cookieStoragePort,
   domainMatches,
   normalizeSetCookieFromLine,
   pathMatches,
