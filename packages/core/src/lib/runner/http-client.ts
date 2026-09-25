@@ -5,6 +5,7 @@
 
 import type { FormDataLike } from "form-data-encoder";
 import { curlHttpRequest } from "./curl-transport";
+import type { HttpStreamSink } from "./http-stream";
 
 export type HttpRequestTimings = {
   phases: {
@@ -73,6 +74,12 @@ export type HttpRequestOptions = {
   extraCurlArgv?: string[];
   /** Skip TLS certificate verification (curl --insecure / -k). */
   insecure?: boolean;
+  /**
+   * When set, curl runs with `--no-buffer` and body bytes are emitted as
+   * `http-stream` NDJSON events while the response is still open.
+   * Redirect hops are not streamed; only the final response is.
+   */
+  stream?: HttpStreamSink;
 };
 
 /** Encode FormData to buffer and content-type using form-data-encoder. */

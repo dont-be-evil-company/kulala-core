@@ -459,6 +459,19 @@ GET https://example.com/{{FOO}} HTTP/1.1
   expect(block.operators[5]?.args).toBe(`"What is your name?" NAME`);
 });
 
+test("parser: parses kulala-keep-alive-stream operator", async () => {
+  const content = `### Stream
+# @kulala-keep-alive-stream
+GET https://example.com/events HTTP/1.1
+`;
+  const doc = await getDocument(content.trim());
+  const block = doc.blocks[0]!;
+  expect(block.errors).toEqual([]);
+  expect(block.operators.map((o) => o.name)).toEqual([
+    "kulala-keep-alive-stream",
+  ]);
+});
+
 test("parser: parses kulala-openapi-explorer operator", async () => {
   const content = `### OpenAPI
 # @kulala-openapi-explorer

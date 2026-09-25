@@ -25,6 +25,7 @@ export type KulalaOperatorName =
   | "kulala-openapi-no-cache"
   | "kulala-jq"
   | "jq"
+  | "kulala-keep-alive-stream"
   | KulalaCurlPassthroughOperatorName;
 
 export const kulalaOperatorNames: Set<KulalaOperatorName> = new Set([
@@ -51,6 +52,7 @@ export const kulalaOperatorNames: Set<KulalaOperatorName> = new Set([
   "kulala-openapi-no-cache",
   "kulala-jq",
   "jq",
+  "kulala-keep-alive-stream",
 ]);
 
 export type KulalaOperatorArgs = string | number | boolean;

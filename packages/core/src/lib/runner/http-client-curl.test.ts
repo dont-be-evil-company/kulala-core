@@ -1,12 +1,14 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createServer } from "node:http";
 import {
   createServer as createHttp2Server,
   type Http2Server,
   type ServerHttp2Stream,
 } from "node:http2";
+import { closeDb, getDbInMemory, setDbForTesting } from "../persistence";
 import { httpRequest } from "./http-client";
-import { curlNeedsRequestFlag } from "./curl-transport";
+import { buildKulalaCurlArgs, curlNeedsRequestFlag } from "./curl-transport";
+import type { HttpStreamEvent } from "./http-stream";
 import { resolveCurlPath } from "./embedded-curl";
 
 async function hasCurl(): Promise<boolean> {
@@ -39,6 +41,14 @@ function listenHttp2(server: Http2Server): Promise<number> {
 }
 
 describe("curl transport", () => {
+  beforeEach(() => {
+    setDbForTesting(getDbInMemory());
+  });
+
+  afterEach(() => {
+    closeDb();
+  });
+
   test("forces HTTP/1.0 when requested", async () => {
     if (!(await hasCurl())) return;
 
@@ -278,6 +288,149 @@ describe("curl transport", () => {
     };
     expect(parsed.raw).toBe('{"foo":"bar"}');
     expect(parsed.contentType).toBeNull();
+  });
+
+  test("emits body chunks before the server closes the stream", async () => {
+    if (!(await hasCurl())) return;
+
+    const events: HttpStreamEvent[] = [];
+    let release = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let serverEnded = false;
+    const server = createServer((_req, res) => {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+      });
+      res.write("data: one\n\n");
+      void gate.then(() => {
+        serverEnded = true;
+        res.end("data: two\n\n");
+      });
+    });
+    const port = await listenHttp(server);
+
+    let settleChunk: () => void = () => {};
+    const chunkBeforeClose = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("no body chunk before the server closed")),
+        8000,
+      );
+      settleChunk = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+    });
+
+    const pending = httpRequest({
+      url: `http://127.0.0.1:${port}/`,
+      method: "GET",
+      headers: { Accept: "text/event-stream" },
+      stream: {
+        emit(event) {
+          events.push(event);
+          if (
+            event.event === "chunk" &&
+            (event.data ?? "").includes("data: one") &&
+            !serverEnded
+          ) {
+            settleChunk();
+          }
+        },
+      },
+    });
+
+    try {
+      await chunkBeforeClose;
+      expect(serverEnded).toBe(false);
+      expect(events[0]?.event).toBe("headers");
+      expect(events[0]?.status).toBe(200);
+      expect(events.some((event) => event.event === "chunk")).toBe(true);
+      release();
+      const res = await pending;
+      expect(res.statusCode).toBe(200);
+      expect(res.body.toString("utf8")).toBe("data: one\n\ndata: two\n\n");
+      expect(events.some((event) => event.event === "error")).toBe(false);
+    } finally {
+      release();
+      server.close();
+    }
+  });
+
+  test("streams only the final hop after a redirect", async () => {
+    if (!(await hasCurl())) return;
+
+    const events: HttpStreamEvent[] = [];
+    const server = createServer((req, res) => {
+      if (req.url === "/") {
+        res.writeHead(302, { location: "/final" });
+        res.end("redirect-body");
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("final-body");
+    });
+    const port = await listenHttp(server);
+
+    try {
+      const res = await httpRequest({
+        url: `http://127.0.0.1:${port}/`,
+        method: "GET",
+        headers: {},
+        stream: {
+          emit(event) {
+            events.push(event);
+          },
+        },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.body.toString("utf8")).toBe("final-body");
+      expect(events.filter((event) => event.event === "headers")).toHaveLength(
+        1,
+      );
+      expect(events[0]?.status).toBe(200);
+      expect(events.map((event) => event.data ?? "").join("")).toBe(
+        "final-body",
+      );
+      expect(events.map((event) => event.data ?? "").join("")).not.toContain(
+        "redirect-body",
+      );
+    } finally {
+      server.close();
+    }
+  });
+});
+
+describe("buildKulalaCurlArgs", () => {
+  const base = {
+    method: "GET",
+    url: "http://127.0.0.1/",
+    headers: {},
+    headerPath: "/tmp/headers",
+    bodyPath: "/tmp/body",
+    writeOut: "http_code=%{http_code}",
+    extra: [] as string[],
+  };
+
+  test("buffered requests do not pass -N", () => {
+    const args = buildKulalaCurlArgs({ ...base, stream: false });
+    expect(args).not.toContain("-N");
+    expect(args).not.toContain("--no-buffer");
+    expect(args).toContain("/tmp/body");
+  });
+
+  test("keep-alive streaming forces unbuffered stdout", () => {
+    const args = buildKulalaCurlArgs({
+      ...base,
+      stream: true,
+      writeOut: "%output{/tmp/writeout}http_code=%{http_code}",
+    });
+    expect(args).toContain("-N");
+    const outputAt = args.indexOf("--output");
+    expect(args[outputAt + 1]).toBe("-");
+    expect(args.at(-1)).toBe("http://127.0.0.1/");
   });
 });
 

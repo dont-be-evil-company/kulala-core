@@ -10,6 +10,7 @@ import {
   getEffectiveJqFilter,
   jetbrainsOperatorsToCurlArgv,
   parseDurationToSec,
+  stripInheritedMaxTime,
 } from "./effective-operators";
 
 function block(operators: KulalaBlock["operators"]): KulalaBlock {
@@ -105,6 +106,32 @@ describe("getEffectiveCurlArgv", () => {
       "--max-time",
       "0.05",
     ]);
+  });
+});
+
+describe("stripInheritedMaxTime", () => {
+  test("drops env --max-time when the stream operator has no explicit cap", () => {
+    const argv = stripInheritedMaxTime(
+      ["--max-time", "2", "--insecure"],
+      [op("kulala-keep-alive-stream")],
+    );
+    expect(argv).toEqual(["--insecure"]);
+  });
+
+  test("keeps # @timeout", () => {
+    const argv = stripInheritedMaxTime(
+      ["--max-time", "0.05"],
+      [op("kulala-keep-alive-stream"), op("timeout", "50 ms")],
+    );
+    expect(argv).toEqual(["--max-time", "0.05"]);
+  });
+
+  test("keeps # @kulala-curl--max-time", () => {
+    const argv = stripInheritedMaxTime(
+      ["--max-time", "5"],
+      [op("kulala-keep-alive-stream"), op("kulala-curl--max-time", "5")],
+    );
+    expect(argv).toEqual(["--max-time", "5"]);
   });
 });
 

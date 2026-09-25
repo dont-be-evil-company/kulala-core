@@ -101,6 +101,12 @@ export function staticCompletionItems(sourceName: string): LspCompletionItem[] {
       documentation: "Filter response body in UI with jq",
     },
     {
+      label: "kulala-keep-alive-stream",
+      insertText: "kulala-keep-alive-stream",
+      documentation:
+        "Stream the response body as it arrives (curl --no-buffer). Use for SSE, ndjson, and other long-lived HTTP responses.",
+    },
+    {
       label: "kulala-prompt",
       insertText:
         'kulala-prompt "What is your password?" MY_VAR_NAME { type: "password|text" }',

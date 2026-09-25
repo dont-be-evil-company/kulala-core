@@ -13,6 +13,7 @@ import {
   getEffectiveCurlArgv,
   getEffectiveJqFilter,
   getEffectiveOperators,
+  stripInheritedMaxTime,
 } from "./effective-operators";
 import {
   applyDefaultHeaders,
@@ -1205,6 +1206,7 @@ export async function doRequestFromBlock(
         }
       }
 
+      const keepAliveStream = hasOp(["kulala-keep-alive-stream"]);
       const res = await httpRequest({
         url,
         method,
@@ -1214,7 +1216,16 @@ export async function doRequestFromBlock(
         followRedirects,
         propagateCookiesOnRedirect: cookieJarEnabled,
         cookieJarEnabled,
-        extraCurlArgv,
+        extraCurlArgv: keepAliveStream
+          ? stripInheritedMaxTime(extraCurlArgv, effectiveOperators)
+          : extraCurlArgv,
+        ...(keepAliveStream
+          ? {
+              stream: {
+                ...(block.name ? { blockName: block.name } : {}),
+              },
+            }
+          : {}),
       });
 
       const rawBody = res.body;

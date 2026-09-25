@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { access } from "node:fs/promises";
 import type {
   HttpRequestOptions,
@@ -12,6 +12,8 @@ import { resolveCurlPath } from "./embedded-curl";
 import { performance } from "node:perf_hooks";
 import { constants as fsConstants } from "node:fs";
 import { dirname, join } from "node:path";
+import { headersFromDump } from "../curl/headers-dump";
+import { emitHttpStreamEvent, type HttpStreamSink } from "./http-stream";
 import {
   cookieAppliesToRequest,
   getCookiePairsForRequest,
@@ -131,7 +133,6 @@ function stripCookieHeader(headers: Record<string, string>): void {
   }
 }
 
-import { headersFromDump } from "../curl/headers-dump";
 import { curlHeaderArg } from "../curl/format";
 
 /** Whether curl needs an explicit `--request` / `-X` (avoids verbose "already inferred" notes). */
@@ -176,11 +177,7 @@ function buildTimings(w: CurlWriteOut): HttpRequestTimings {
   };
 }
 
-async function runCurl(args: string[]): Promise<{
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}> {
+async function spawnCurl(args: string[]): Promise<ChildProcess> {
   const curlPath = await resolveCurlPath();
   const env = { ...process.env };
   if (!env.CURL_CA_BUNDLE) {
@@ -192,15 +189,71 @@ async function runCurl(args: string[]): Promise<{
       // ignore
     }
   }
+  return spawn(curlPath, args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    env,
+  });
+}
+
+const activeStreamingCurl = new Set<ChildProcess>();
+let streamingCurlHooks = 0;
+
+function killStreamingCurl(signal: NodeJS.Signals): void {
+  for (const child of activeStreamingCurl) {
+    try {
+      child.kill(signal);
+    } catch {
+      // already exited
+    }
+  }
+}
+
+function onStreamingSigTerm(): void {
+  killStreamingCurl("SIGTERM");
+  process.exit(143);
+}
+
+function onStreamingSigInt(): void {
+  killStreamingCurl("SIGINT");
+  process.exit(130);
+}
+
+/** While a keep-alive curl is running, cancel signals must reap it too. */
+function trackStreamingCurl(child: ChildProcess): void {
+  activeStreamingCurl.add(child);
+  if (streamingCurlHooks === 0) {
+    process.on("SIGTERM", onStreamingSigTerm);
+    process.on("SIGINT", onStreamingSigInt);
+  }
+  streamingCurlHooks++;
+  const untrack = (): void => {
+    if (!activeStreamingCurl.delete(child)) return;
+    streamingCurlHooks--;
+    if (streamingCurlHooks === 0) {
+      process.off("SIGTERM", onStreamingSigTerm);
+      process.off("SIGINT", onStreamingSigInt);
+    }
+  };
+  child.on("close", untrack);
+  child.on("error", untrack);
+}
+
+async function runCurl(args: string[]): Promise<{
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}> {
+  const child = await spawnCurl(args);
+  const stdout = child.stdout;
+  const stderr = child.stderr;
+  if (!stdout || !stderr) {
+    throw new Error("curl stdio pipes were not created");
+  }
   return await new Promise((resolve, reject) => {
-    const child = spawn(curlPath, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-      env,
-    });
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
-    child.stdout.on("data", (c: Buffer) => stdoutChunks.push(c));
-    child.stderr.on("data", (c: Buffer) => stderrChunks.push(c));
+    stdout.on("data", (c: Buffer) => stdoutChunks.push(c));
+    stderr.on("data", (c: Buffer) => stderrChunks.push(c));
     child.on("error", reject);
     child.on("close", (code) => {
       resolve({
@@ -210,6 +263,239 @@ async function runCurl(args: string[]): Promise<{
       });
     });
   });
+}
+
+export type KulalaCurlArgsInput = {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  headerPath: string;
+  bodyPath: string;
+  writeOut: string;
+  extra: string[];
+  timeoutSec?: number;
+  connectionTimeoutSec?: number;
+  insecure?: boolean;
+  httpVersion?: HttpRequestOptions["httpVersion"];
+  stream: boolean;
+  uploadPath?: string;
+};
+
+/** Curl argv for one hop. Streaming puts the body on stdout and forces `-N`. */
+export function buildKulalaCurlArgs(input: KulalaCurlArgsInput): string[] {
+  const args: string[] = [
+    "--silent",
+    "--verbose",
+    "--show-error",
+    "--dump-header",
+    input.headerPath,
+  ];
+  if (!input.stream) {
+    args.push("--output", input.bodyPath);
+  }
+  args.push("--write-out", input.writeOut);
+
+  const hasBody = input.uploadPath !== undefined;
+  if (input.method === "HEAD") {
+    args.push("--head");
+  } else if (curlNeedsRequestFlag(input.method, hasBody)) {
+    args.push("--request", input.method);
+  }
+
+  const extra = input.extra;
+  if (
+    input.timeoutSec !== undefined &&
+    Number.isFinite(input.timeoutSec) &&
+    !extra.includes("--max-time")
+  ) {
+    args.push("--max-time", String(Math.max(0, input.timeoutSec)));
+  }
+  if (
+    input.connectionTimeoutSec !== undefined &&
+    Number.isFinite(input.connectionTimeoutSec) &&
+    !extra.includes("--connect-timeout")
+  ) {
+    args.push(
+      "--connect-timeout",
+      String(Math.max(0, input.connectionTimeoutSec)),
+    );
+  }
+  if (
+    input.insecure &&
+    !extra.includes("--insecure") &&
+    !extra.includes("-k")
+  ) {
+    args.push("--insecure");
+  }
+  if (extra.length > 0) args.push(...extra);
+
+  if (input.httpVersion === "HTTP/1.0") args.push("--http1.0");
+  else if (input.httpVersion === "HTTP/1.1") args.push("--http1.1");
+  else if (input.httpVersion === "HTTP/2") {
+    const parsed = new URL(input.url);
+    if (parsed.protocol === "https:") {
+      args.push("--http2");
+    } else if (parsed.protocol === "http:") {
+      args.push("--http2-prior-knowledge");
+    } else {
+      throw new Error("HTTP/2 is only supported for http/https URLs");
+    }
+  }
+
+  for (const [k, v] of Object.entries(input.headers)) {
+    args.push("--header", curlHeaderArg(k, v));
+  }
+
+  if (input.uploadPath) {
+    args.push("--data-binary", `@${input.uploadPath}`);
+  }
+
+  if (input.stream) {
+    args.push("--output", "-");
+    if (!args.includes("-N") && !args.includes("--no-buffer")) {
+      args.push("-N");
+    }
+  }
+
+  args.push(input.url);
+  return args;
+}
+
+function dumpHeadersReady(dump: string, force: boolean): boolean {
+  if (!dump.includes("HTTP/")) return false;
+  if (force) return true;
+  return /\r?\n\r?\n/.test(dump);
+}
+
+async function readHeaderDump(
+  headerPath: string,
+  force: boolean,
+): Promise<string | undefined> {
+  try {
+    const dump = await fs.readFile(headerPath, "utf-8");
+    if (!dumpHeadersReady(dump, force)) return undefined;
+    return dump;
+  } catch {
+    return undefined;
+  }
+}
+
+async function runCurlStreaming(opts: {
+  args: string[];
+  headerPath: string;
+  stream: HttpStreamSink;
+  currentUrl: string;
+  followRedirects: boolean;
+  redirectStatuses: Set<number>;
+}): Promise<{ stderr: string; exitCode: number; body: Buffer<ArrayBuffer> }> {
+  const child = await spawnCurl(opts.args);
+  trackStreamingCurl(child);
+  const stdout = child.stdout;
+  const stderr = child.stderr;
+  if (!stdout || !stderr) {
+    child.kill("SIGTERM");
+    throw new Error("curl stdio pipes were not created");
+  }
+
+  const stderrChunks: Buffer[] = [];
+  const rawBody: Buffer[] = [];
+  let held = Buffer.alloc(0);
+  let headersReady = false;
+  let suppressEvents = false;
+  let decoder: TextDecoder | null = null;
+  let headerChain: Promise<void> = Promise.resolve();
+  let poll: ReturnType<typeof setInterval> | undefined;
+  const stopPoll = (): void => {
+    if (!poll) return;
+    clearInterval(poll);
+    poll = undefined;
+  };
+
+  const emitChunk = (chunk: Buffer, final: boolean): void => {
+    if (suppressEvents || !headersReady) return;
+    decoder ??= new TextDecoder("utf-8", { fatal: false });
+    const text = decoder.decode(chunk, { stream: !final });
+    if (!text) return;
+    emitHttpStreamEvent(opts.stream, { event: "chunk", data: text });
+  };
+
+  const tryHeaders = async (force: boolean): Promise<void> => {
+    if (headersReady) return;
+    const dump = await readHeaderDump(opts.headerPath, force);
+    if (!dump || headersReady) return;
+    const parsed = headersFromDump(dump);
+    const location = parsed.headers["location"];
+    const isRedirect =
+      opts.followRedirects &&
+      opts.redirectStatuses.has(parsed.statusCode) &&
+      !!location;
+    headersReady = true;
+    stopPoll();
+    const snapshot = held;
+    held = Buffer.alloc(0);
+    if (isRedirect) {
+      suppressEvents = true;
+      return;
+    }
+    emitHttpStreamEvent(opts.stream, {
+      event: "headers",
+      status: parsed.statusCode,
+      ...(parsed.httpVersion ? { httpVersion: parsed.httpVersion } : {}),
+      headers: parsed.headers,
+      url: opts.currentUrl,
+    });
+    if (snapshot.length > 0) emitChunk(snapshot, false);
+  };
+
+  const scheduleHeaders = (force: boolean): void => {
+    headerChain = headerChain.then(() => tryHeaders(force));
+  };
+
+  stderr.on("data", (c: Buffer) => stderrChunks.push(c));
+  stdout.on("data", (c: Buffer) => {
+    rawBody.push(c);
+    if (!headersReady) {
+      held = Buffer.concat([held, c]);
+      scheduleHeaders(false);
+      return;
+    }
+    if (!suppressEvents) emitChunk(c, false);
+  });
+
+  poll = setInterval(() => {
+    if (headersReady) {
+      stopPoll();
+      return;
+    }
+    scheduleHeaders(false);
+  }, 20);
+  if (typeof poll.unref === "function") poll.unref();
+
+  const exitCode = await new Promise<number>((resolve, reject) => {
+    let settled = false;
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      stopPoll();
+      reject(error);
+    });
+    child.on("close", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      stopPoll();
+      resolve(signal ? 1 : (code ?? 0));
+    });
+  });
+
+  await headerChain;
+  await tryHeaders(true);
+  if (!suppressEvents && headersReady) emitChunk(Buffer.alloc(0), true);
+
+  return {
+    stderr: Buffer.concat(stderrChunks).toString("utf-8"),
+    exitCode,
+    body: Buffer.concat(rawBody),
+  };
 }
 
 export async function curlHttpRequest(
@@ -271,7 +557,7 @@ export async function curlHttpRequest(
       await fs.rm(tempBase, { recursive: true, force: true });
     };
 
-    const writeOut = [
+    const writeOutBody = [
       "http_code=%{http_code}",
       "url_effective=%{url_effective}",
       "time_namelookup=%{time_namelookup}",
@@ -283,96 +569,82 @@ export async function curlHttpRequest(
       "time_redirect=%{time_redirect}",
       "",
     ].join("\n");
+    const streaming = options.stream != null;
+    const writeOutPath = join(tempBase, `writeout-${randomUUID()}`);
+    // `%output{file}` (curl >= 8.3) keeps timings off the body stream.
+    const writeOut = streaming
+      ? `%output{${writeOutPath}}${writeOutBody}`
+      : writeOutBody;
 
     const hasBody = currentBody !== undefined;
-    const args: string[] = [
-      "--silent",
-      "--verbose",
-      "--show-error",
-      "--dump-header",
-      headerPath,
-      "--output",
-      bodyPath,
-      "--write-out",
-      writeOut,
-    ];
-
-    if (currentMethod === "HEAD") {
-      args.push("--head");
-    } else if (curlNeedsRequestFlag(currentMethod, hasBody)) {
-      args.push("--request", currentMethod);
-    }
-
-    const extra = options.extraCurlArgv ?? [];
-    if (
-      options.timeoutSec !== undefined &&
-      Number.isFinite(options.timeoutSec) &&
-      !extra.includes("--max-time")
-    ) {
-      const sec = Math.max(0, options.timeoutSec);
-      args.push("--max-time", String(sec));
-    }
-    if (
-      options.connectionTimeoutSec !== undefined &&
-      Number.isFinite(options.connectionTimeoutSec) &&
-      !extra.includes("--connect-timeout")
-    ) {
-      const sec = Math.max(0, options.connectionTimeoutSec);
-      args.push("--connect-timeout", String(sec));
-    }
-    if (
-      options.insecure &&
-      !extra.includes("--insecure") &&
-      !extra.includes("-k")
-    ) {
-      args.push("--insecure");
-    }
-    if (extra.length > 0) {
-      args.push(...extra);
-    }
-
-    // Protocol selection
-    if (options.httpVersion === "HTTP/1.0") args.push("--http1.0");
-    else if (options.httpVersion === "HTTP/1.1") args.push("--http1.1");
-    else if (options.httpVersion === "HTTP/2") {
-      const parsed = new URL(currentUrl);
-      if (parsed.protocol === "https:") {
-        args.push("--http2");
-      } else if (parsed.protocol === "http:") {
-        args.push("--http2-prior-knowledge");
-      } else {
-        throw new Error("HTTP/2 is only supported for http/https URLs");
-      }
-    }
-
-    // Headers
-    for (const [k, v] of Object.entries(currentHeaders)) {
-      args.push("--header", curlHeaderArg(k, v));
-    }
-
+    let uploadPath: string | undefined;
     if (hasBody) {
       const body =
         typeof currentBody === "string" || Buffer.isBuffer(currentBody)
           ? currentBody
           : Buffer.from(String(currentBody));
-      const uploadPath = join(tempBase, `upload-${randomUUID()}`);
+      uploadPath = join(tempBase, `upload-${randomUUID()}`);
       await fs.writeFile(uploadPath, body);
-      args.push("--data-binary", `@${uploadPath}`);
     }
 
-    args.push(currentUrl);
+    const args = buildKulalaCurlArgs({
+      method: currentMethod,
+      url: currentUrl,
+      headers: currentHeaders,
+      headerPath,
+      bodyPath,
+      writeOut,
+      extra: options.extraCurlArgv ?? [],
+      timeoutSec: options.timeoutSec,
+      connectionTimeoutSec: options.connectionTimeoutSec,
+      insecure: options.insecure,
+      httpVersion: options.httpVersion,
+      stream: streaming,
+      uploadPath,
+    });
 
     try {
-      const { stdout, stderr, exitCode } = await runCurl(args);
+      let stderr: string;
+      let exitCode: number;
+      let body = Buffer.alloc(0);
+      let writeOutText: string;
+      if (streaming) {
+        const exec = await runCurlStreaming({
+          args,
+          headerPath,
+          stream: options.stream!,
+          currentUrl,
+          followRedirects,
+          redirectStatuses: REDIRECT_STATUSES,
+        });
+        stderr = exec.stderr;
+        exitCode = exec.exitCode;
+        body = exec.body;
+        try {
+          writeOutText = await fs.readFile(writeOutPath, "utf-8");
+        } catch {
+          writeOutText = "";
+        }
+      } else {
+        const exec = await runCurl(args);
+        stderr = exec.stderr;
+        exitCode = exec.exitCode;
+        writeOutText = exec.stdout;
+      }
       if (exitCode !== 0) {
         const msg = stderr.trim() || `curl failed with exit code ${exitCode}`;
+        if (streaming && options.stream) {
+          emitHttpStreamEvent(options.stream, { event: "error", error: msg });
+        }
         throw new Error(msg);
       }
+      if (!streaming) {
+        body = await fs.readFile(bodyPath);
+      }
 
-      const w = parseCurlWriteOut(stdout);
+      const w = parseCurlWriteOut(writeOutText);
       const dump = await fs.readFile(headerPath, "utf-8");
       const { statusCode, headers, httpVersion } = headersFromDump(dump);
-      const body = await fs.readFile(bodyPath);
       const timings = buildTimings(w);
       return {
         statusCode: statusCode || w.http_code || 0,

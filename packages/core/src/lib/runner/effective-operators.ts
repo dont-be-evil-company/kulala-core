@@ -1,4 +1,8 @@
-import { curlArgvFromOperators, mergeCurlArgv } from "../curl/passthrough";
+import {
+  curlArgvFromOperators,
+  curlPassthroughFlagKey,
+  mergeCurlArgv,
+} from "../curl/passthrough";
 import type { KulalaDocument } from "../parser/types";
 import type { KulalaBlock } from "../parser/types/block";
 import type { KulalaOperator } from "../parser/types/operator";
@@ -105,4 +109,42 @@ export function getEffectiveCurlArgv(
   const jetbrainsArgv = jetbrainsOperatorsToCurlArgv(operators);
   const passthroughArgv = curlArgvFromOperators(operators);
   return mergeCurlArgv([envArgv, jetbrainsArgv, passthroughArgv]);
+}
+
+/** `# @timeout` or `# @kulala-curl--max-time` / `# @kulala-curl-m` set a deliberate cap. */
+export function hasExplicitMaxTime(operators: KulalaOperator[]): boolean {
+  if (
+    operators.some(
+      (op) => op.name === "timeout" && String(op.args ?? "").trim() !== "",
+    )
+  ) {
+    return true;
+  }
+  return operators.some((op) => {
+    const flag = curlPassthroughFlagKey(op.name);
+    return flag === "--max-time" || flag === "-m";
+  });
+}
+
+/**
+ * Drop env/default `--max-time` so a keep-alive stream is not killed by a project timeout.
+ * Explicit `# @timeout` and `# @kulala-curl--max-time` are left in place.
+ */
+export function stripInheritedMaxTime(
+  argv: string[],
+  operators: KulalaOperator[],
+): string[] {
+  if (hasExplicitMaxTime(operators)) return argv;
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i]!;
+    if (token === "--max-time" || token === "-m") {
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("-")) i++;
+      continue;
+    }
+    if (token.startsWith("--max-time=")) continue;
+    out.push(token);
+  }
+  return out;
 }

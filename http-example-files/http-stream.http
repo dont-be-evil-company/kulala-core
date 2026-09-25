@@ -1,0 +1,7 @@
+### STREAM
+
+# @kulala-keep-alive-stream
+
+GET https://httpbin.org/drip?numbytes=30
+  &duration=30
+  HTTP/1.1
