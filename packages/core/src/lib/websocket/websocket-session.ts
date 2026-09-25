@@ -1,17 +1,24 @@
 import { writeSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { normalizeSentPayload } from "./display";
+import type { KulalaWebSocketMessage } from "./messages";
 
 export type WebSocketConnectOptions = {
   url: string;
   body?: string;
   headers?: Record<string, string>;
+  /** When set, run this script instead of sending `body` once on open. */
+  messages?: KulalaWebSocketMessage[];
+  /** Bounds each `wait-for-server` step. Unset waits until a frame or close. */
+  timeoutMs?: number;
 };
 
 type OutboundMessage =
   | { type: "ready" }
   | { type: "message"; data: string }
   | { type: "sent"; data: string }
+  | { type: "waiting"; remaining: number }
+  | { type: "script-done" }
   | { type: "error"; error: string }
   | { type: "closed"; code?: number };
 
@@ -145,15 +152,105 @@ export async function runWebSocketSession(
     const rl = createInterface({ input: process.stdin, terminal: false });
     let opened = false;
     let errorSent = false;
+    let sessionClosed = false;
     let handshakeError: Promise<void> | undefined;
+    const inbox: string[] = [];
+    let inboxWaiter: (() => void) | null = null;
+    const useScript = Array.isArray(connect.messages);
 
     const cleanup = () => {
+      sessionClosed = true;
+      inboxWaiter?.();
+      inboxWaiter = null;
       rl.close();
       try {
         ws.close();
       } catch {
         // ignore
       }
+    };
+
+    const waitForInbox = (
+      timeoutLeft: number | undefined,
+    ): Promise<boolean> => {
+      if (sessionClosed) return Promise.resolve(false);
+      if (inbox.length > 0) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        let settled = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const finish = (ok: boolean) => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          if (inboxWaiter === onInbox) inboxWaiter = null;
+          resolve(ok);
+        };
+        const onInbox = () => finish(!sessionClosed && inbox.length > 0);
+        inboxWaiter = onInbox;
+        if (inbox.length > 0 || sessionClosed) {
+          finish(!sessionClosed && inbox.length > 0);
+          return;
+        }
+        if (timeoutLeft !== undefined) {
+          timer = setTimeout(() => finish(false), timeoutLeft);
+        }
+      });
+    };
+
+    const waitForServerMessages = async (
+      count: number,
+    ): Promise<"ok" | "timeout" | "closed"> => {
+      let remaining = count;
+      const deadline =
+        connect.timeoutMs !== undefined
+          ? Date.now() + connect.timeoutMs
+          : undefined;
+      writeOutbound({ type: "waiting", remaining });
+      while (remaining > 0) {
+        if (sessionClosed) return "closed";
+        if (inbox.length > 0) {
+          inbox.shift();
+          remaining -= 1;
+          if (remaining > 0) writeOutbound({ type: "waiting", remaining });
+          continue;
+        }
+        const timeoutLeft =
+          deadline !== undefined ? deadline - Date.now() : undefined;
+        if (timeoutLeft !== undefined && timeoutLeft <= 0) {
+          writeOutbound({
+            type: "error",
+            error: "Timed out waiting for server message",
+          });
+          return "timeout";
+        }
+        const woke = await waitForInbox(timeoutLeft);
+        if (sessionClosed) return "closed";
+        if (!woke) {
+          writeOutbound({
+            type: "error",
+            error: "Timed out waiting for server message",
+          });
+          return "timeout";
+        }
+      }
+      return "ok";
+    };
+
+    const runScript = async () => {
+      if (!useScript) {
+        if (connect.body && connect.body.trim()) sendPayload(connect.body);
+        return;
+      }
+      for (const step of connect.messages ?? []) {
+        if (sessionClosed) return;
+        if (step.waitForServer > 0) {
+          const status = await waitForServerMessages(step.waitForServer);
+          if (status !== "ok") return;
+        }
+        if (sessionClosed) return;
+        if (step.data.trim()) sendPayload(step.data);
+      }
+      if (!sessionClosed) writeOutbound({ type: "script-done" });
     };
 
     const emitHandshakeError = async (fallback: string): Promise<void> => {
@@ -167,6 +264,7 @@ export async function runWebSocketSession(
     };
 
     const sendPayload = (data: string) => {
+      if (sessionClosed || ws.readyState !== WebSocket.OPEN) return;
       const payload = data.endsWith("\n") ? data : data + "\n";
       ws.send(payload);
       writeOutbound({ type: "sent", data: normalizeSentPayload(data) });
@@ -175,9 +273,7 @@ export async function runWebSocketSession(
     ws.addEventListener("open", () => {
       opened = true;
       writeOutbound({ type: "ready" });
-      if (connect.body && connect.body.trim()) {
-        sendPayload(connect.body);
-      }
+      void runScript();
     });
 
     ws.addEventListener("message", (ev) => {
@@ -188,6 +284,8 @@ export async function runWebSocketSession(
             ? new TextDecoder().decode(ev.data)
             : String(ev.data);
       writeOutbound({ type: "message", data });
+      inbox.push(data);
+      inboxWaiter?.();
     });
 
     ws.addEventListener("error", (ev) => {
@@ -195,6 +293,8 @@ export async function runWebSocketSession(
     });
 
     ws.addEventListener("close", (ev) => {
+      sessionClosed = true;
+      inboxWaiter?.();
       void (async () => {
         if (!opened) {
           if (handshakeError) {

@@ -10,6 +10,10 @@ import {
   formatWithBundledPrettier,
   type BundledPrettierOptions,
 } from "./prettier-bundled";
+import {
+  hasWebSocketMessageSeparator,
+  matchWebSocketSeparator,
+} from "../websocket/messages";
 
 export type KulalaHttpBodyFormatOptions = {
   indent?: number;
@@ -233,6 +237,35 @@ async function tryFormatJsonString(
   }
 }
 
+/** Pretty-print each JSON frame and keep `===` / `=== wait-for-server` lines. */
+async function formatWebSocketScriptBody(
+  body: string,
+  bodyFormat: KulalaHttpBodyFormatOptions,
+): Promise<string> {
+  const pieces: string[] = [];
+  let buf: string[] = [];
+
+  const flush = async () => {
+    const raw = buf.join("\n");
+    buf = [];
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    const pretty = await tryFormatJsonString(trimmed, bodyFormat);
+    pieces.push((pretty ?? trimmed).trimEnd());
+  };
+
+  for (const line of body.split(/\r?\n/)) {
+    if (matchWebSocketSeparator(line)) {
+      await flush();
+      pieces.push(line.trimEnd());
+      continue;
+    }
+    buf.push(line);
+  }
+  await flush();
+  return pieces.join("\n");
+}
+
 async function formatJsonObjectBody(
   body: object,
   bodyFormat: KulalaHttpBodyFormatOptions,
@@ -362,6 +395,16 @@ async function formatBodyContent(
 
   if (typeof body === "string") {
     const formatted = body.trim();
+    if (
+      block.request.method === "WEBSOCKET" &&
+      hasWebSocketMessageSeparator(formatted)
+    ) {
+      block.request.body = await formatWebSocketScriptBody(
+        formatted,
+        bodyFormat,
+      );
+      return;
+    }
     if (formatParser === "graphql") {
       const { replacedBody, placeholders } = preservePlaceholders(formatted);
       const { query, variables } = splitGraphQLBody(replacedBody);

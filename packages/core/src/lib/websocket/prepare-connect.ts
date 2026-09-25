@@ -9,6 +9,12 @@ export type WebSocketConnectInput = WebSocketConnectOptions & {
   vars?: Record<string, string>;
 };
 
+function messagesHaveTemplates(
+  messages: WebSocketConnectOptions["messages"],
+): boolean {
+  return messages?.some((message) => message.data.includes("{{")) ?? false;
+}
+
 /**
  * Apply variable substitution to a WebSocket connect payload before opening the session.
  * Callers should pass values already resolved by kulala-core run when possible; `vars`
@@ -21,13 +27,16 @@ export function prepareWebSocketConnect(
   const hasTemplates =
     input.url.includes("{{") ||
     (input.body?.includes("{{") ?? false) ||
+    messagesHaveTemplates(input.messages) ||
     Object.values(input.headers ?? {}).some((v) => v.includes("{{"));
 
   if (!hasTemplates) {
     return {
       url: input.url,
-      body: input.body,
-      headers: input.headers,
+      ...(input.body !== undefined ? { body: input.body } : {}),
+      ...(input.headers !== undefined ? { headers: input.headers } : {}),
+      ...(input.messages !== undefined ? { messages: input.messages } : {}),
+      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     };
   }
 
@@ -44,10 +53,16 @@ export function prepareWebSocketConnect(
     input.body != null
       ? (substituteInObject(input.body, vars) as string)
       : undefined;
+  const messages = input.messages?.map((message) => ({
+    waitForServer: message.waitForServer,
+    data: substituteInString(message.data, vars),
+  }));
 
   return {
     url: substituteInString(input.url, vars),
     ...(body !== undefined ? { body } : {}),
     ...(headers !== undefined ? { headers } : {}),
+    ...(messages !== undefined ? { messages } : {}),
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
   };
 }

@@ -1,0 +1,22 @@
+### wait-for-server
+
+WEBSOCKET wss://echo.kulala.app/ws
+Content-Type: application/json
+
+{
+  "message": "First message sent on connection"
+}
+===
+{
+  "message": "Second message"
+}
+=== wait-for-server
+{
+  "message": "Send this after the server response"
+}
+=== wait-for-server
+=== wait-for-server
+=== wait-for-server
+{
+  "message": "This message is sent after 3 server responses"
+}

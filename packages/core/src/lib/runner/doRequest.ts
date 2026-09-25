@@ -13,8 +13,10 @@ import {
   getEffectiveCurlArgv,
   getEffectiveJqFilter,
   getEffectiveOperators,
+  parseDurationToSec,
   stripInheritedMaxTime,
 } from "./effective-operators";
+import { splitWebSocketMessages } from "../websocket/messages";
 import {
   applyDefaultHeaders,
   loadDefaultHeaders,
@@ -1033,11 +1035,20 @@ export async function doRequestFromBlock(
           : body != null
             ? JSON.stringify(body)
             : "";
+      const messages = splitWebSocketMessages(bodyStr);
+      const first = messages[0];
+      const initialMessage =
+        first && first.waitForServer === 0 ? first.data : undefined;
+      const timeoutSec = parseDurationToSec(getOpArgs(["timeout"]) ?? "");
+      const timeoutMs =
+        timeoutSec !== undefined ? Math.round(timeoutSec * 1000) : undefined;
       return {
         success: true,
         protocol: "websocket",
         url,
-        initialMessage: bodyStr || undefined,
+        ...(initialMessage ? { initialMessage } : {}),
+        messages,
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
         request: buildSentRequestSnapshot(
           methodUpper,
           url,

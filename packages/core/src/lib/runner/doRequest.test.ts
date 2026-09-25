@@ -2581,3 +2581,93 @@ test("doRequestFromBlock: kulala-openapi-explorer loads local spec file", async 
     expect(result.openapi?.title).toBe("Local");
   }
 });
+
+test("doRequestFromBlock: WEBSOCKET plan splits === wait-for-server", async () => {
+  const block = makeBlock({
+    operators: [testOperator("timeout", "2 s")],
+    request: {
+      method: "WEBSOCKET",
+      url: "ws://127.0.0.1:9/ws" as KulalaHttpURL,
+      headerSection: [],
+      body: [
+        '{"a":1}',
+        "===",
+        '{"b":2}',
+        "=== wait-for-server",
+        '{"c":3}',
+      ].join("\n"),
+    },
+  });
+
+  const result = await doRequestFromBlock(
+    block,
+    undefined,
+    {},
+    undefined,
+    undefined,
+    "default",
+  );
+  expect(Array.isArray(result)).toBe(false);
+  if (Array.isArray(result) || !("protocol" in result)) {
+    throw new Error("expected websocket plan");
+  }
+  expect(result.protocol).toBe("websocket");
+  expect(result.initialMessage).toBe('{"a":1}');
+  expect(result.messages).toEqual([
+    { waitForServer: 0, data: '{"a":1}' },
+    { waitForServer: 0, data: '{"b":2}' },
+    { waitForServer: 1, data: '{"c":3}' },
+  ]);
+  expect(result.timeoutMs).toBe(2000);
+  expect(result.request?.body).toContain("=== wait-for-server");
+});
+
+test("doRequestFromBlock: WEBSOCKET omits initialMessage when the first step waits", async () => {
+  const block = makeBlock({
+    request: {
+      method: "WEBSOCKET",
+      url: "ws://127.0.0.1:9/ws" as KulalaHttpURL,
+      headerSection: [],
+      body: '=== wait-for-server\n{"c":3}',
+    },
+  });
+
+  const result = await doRequestFromBlock(
+    block,
+    undefined,
+    {},
+    undefined,
+    undefined,
+    "default",
+  );
+  if (Array.isArray(result) || !("protocol" in result)) {
+    throw new Error("expected websocket plan");
+  }
+  expect(result.initialMessage).toBeUndefined();
+  expect(result.messages).toEqual([{ waitForServer: 1, data: '{"c":3}' }]);
+  expect(result.timeoutMs).toBeUndefined();
+});
+
+test("doRequestFromBlock: POST body containing === stays one payload", async () => {
+  const raw = "hello\n===\nworld\n=== wait-for-server\nmore";
+  const block = makeBlock({
+    request: {
+      method: "POST",
+      url: `${baseUrl}/echo-body` as KulalaHttpURL,
+      headerSection: [],
+      body: raw,
+    },
+  });
+
+  const result = await httpDoRequestFromBlock(
+    block,
+    undefined,
+    {},
+    undefined,
+    undefined,
+    "default",
+  );
+  expect(result.success).toBe(true);
+  if (!result.success) return;
+  expect(result.request?.body).toBe(raw);
+});

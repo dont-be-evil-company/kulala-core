@@ -260,4 +260,45 @@ GET https://example.com
     expect(result.formatted).toContain("# ### Find customer by cardcode");
     expect(result.formatted).toContain("### Other");
   });
+
+  test("pretty-prints each WebSocket message and keeps === separators", async () => {
+    const content = `### WS
+WEBSOCKET ws://localhost:8080/websocket
+Content-Type: application/json
+
+{"message":"First"}
+===  // message separator
+{"message":"Second"}
+=== wait-for-server // after the server
+{"message":"Third"}
+`;
+    const result = await formatHttp(content, undefined, { formatBody: true });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.formatted).toContain('{ "message": "First" }');
+    expect(result.formatted).toContain("===  // message separator");
+    expect(result.formatted).toContain('{ "message": "Second" }');
+    expect(result.formatted).toContain(
+      "=== wait-for-server // after the server",
+    );
+    expect(result.formatted).toContain('{ "message": "Third" }');
+  });
+
+  test("leaves === inside a non-websocket body intact", async () => {
+    const content = `### POST
+POST https://example.com
+
+not-json
+===
+still one body
+=== wait-for-server
+tail
+`;
+    const result = await formatHttp(content, undefined, { formatBody: true });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.formatted).toContain(
+      "not-json\n===\nstill one body\n=== wait-for-server\ntail",
+    );
+  });
 });

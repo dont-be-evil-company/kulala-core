@@ -25,6 +25,21 @@ describe("prepareWebSocketConnect", () => {
     });
   });
 
+  test("substitutes variables in scripted messages", () => {
+    expect(
+      prepareWebSocketConnect({
+        url: "{{websocket.addr}}",
+        messages: [{ waitForServer: 1, data: "hello {{name}}" }],
+        timeoutMs: 1500,
+        vars: { "websocket.addr": "wss://ws.ifelse.io", name: "kulala" },
+      }),
+    ).toEqual({
+      url: "wss://ws.ifelse.io",
+      messages: [{ waitForServer: 1, data: "hello kulala" }],
+      timeoutMs: 1500,
+    });
+  });
+
   test("throws when templates remain and no vars are provided", () => {
     expect(() =>
       prepareWebSocketConnect({ url: "{{websocket.addr}}" }),

@@ -1,5 +1,8 @@
 import type { KulalaScriptType } from "../parser/types/script";
+import type { KulalaWebSocketMessage } from "../websocket/messages";
 import type { KulalaResponseFormatOptions } from "./http-response-body";
+
+export type { KulalaWebSocketMessage };
 
 /** Where captured script output came from (pre/post phase, directive site, optional callsite). */
 export type KulalaScriptConsoleOrigin = {
@@ -43,7 +46,16 @@ export type KulalaWebSocketPlanResponse = {
   success: true;
   protocol: "websocket";
   url: string;
+  /**
+   * First frame when it is sent on connect (`waitForServer === 0`).
+   * Omitted when the script waits before the first send, so older hosts
+   * do not emit that frame early.
+   */
   initialMessage?: string;
+  /** IntelliJ `===` / `=== wait-for-server` script. Empty when the body is empty. */
+  messages: KulalaWebSocketMessage[];
+  /** From `# @timeout`, when set. Hosts pass this through to the session. */
+  timeoutMs?: number;
   request?: KulalaRequestSent;
   /** jq filter from `# @kulala-jq` (block overrides file header). */
   jqFilter?: string;

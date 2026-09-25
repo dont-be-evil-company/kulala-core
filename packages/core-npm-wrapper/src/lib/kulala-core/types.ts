@@ -83,11 +83,18 @@ export type KulalaSkippedResponse = {
   scriptConsole?: KulalaScriptConsoleLine[];
 };
 
+export type KulalaWebSocketMessage = {
+  waitForServer: number;
+  data: string;
+};
+
 export type KulalaWebSocketPlanResponse = {
   success: true;
   protocol: "websocket";
   url: string;
   initialMessage?: string;
+  messages?: KulalaWebSocketMessage[];
+  timeoutMs?: number;
 };
 
 export type KulalaResponseItem =
